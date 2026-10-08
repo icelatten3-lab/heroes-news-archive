@@ -1,0 +1,48 @@
+name: 뉴스 수집
+
+on:
+  schedule:
+    # 3시간 간격 · 한국시간 00:10, 03:10, 06:10, 09:10, 12:10, 15:10, 18:10, 21:10
+    # (UTC 기준 표기. 정각은 GitHub 서버가 붐벼 10분으로 둠)
+    - cron: "10 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      backfill_days:
+        description: "과거 며칠치를 소급 수집할지 (평소엔 0)"
+        default: "0"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fetch-news
+  cancel-in-progress: false
+
+jobs:
+  fetch:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: 수집
+        env:
+          BACKFILL: ${{ inputs.backfill_days || '0' }}
+        run: python scripts/fetch.py --backfill-days "$BACKFILL"
+
+      - name: 저장(커밋)
+        run: |
+          git config user.name "news-bot"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add docs/data
+          if git diff --cached --quiet; then echo "변경 없음"; exit 0; fi
+          git commit -m "뉴스 수집 $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M')"
+          # 그 사이 편집 모드에서 메모가 저장됐을 수 있으므로 rebase 후 push
+          for i in 1 2 3; do
+            git pull --rebase && git push && exit 0
+            sleep 5
+          done
+          exit 1
