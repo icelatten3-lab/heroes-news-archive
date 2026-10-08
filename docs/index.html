@@ -275,7 +275,7 @@ function visible(){
   return items.filter(it => {
     const a = ann[it.id] || {};
     if (a.hidden && !(editor && f.showHidden)) return false;
-    if (it.dup && !hasMemo(it.id) && !a.star) return false;   // 포털 사본으로 밝혀진 중복 기사
+    if ((it.dup || it.nonNews) && !hasMemo(it.id) && !a.star) return false;   // 포털 사본으로 밝혀진 중복 기사, 블로그·카페 글
     if (f.period === 'day' && it.pub.slice(0, 10) !== f.date) return false;
     if (from && it.pub.slice(0, 10) < from) return false;
     if (f.source && it.source !== f.source) return false;
@@ -321,7 +321,7 @@ async function renderCal(){
   await loadMonth(calMonth);
   const cnt = {};
   items.forEach(it => {
-    if (!it.pub.startsWith(calMonth) || (ann[it.id] || {}).hidden || it.dup) return;
+    if (!it.pub.startsWith(calMonth) || (ann[it.id] || {}).hidden || it.dup || it.nonNews) return;
     const d = it.pub.slice(0, 10); cnt[d] = (cnt[d] || 0) + 1;
   });
   const max = Math.max(1, ...Object.values(cnt));
