@@ -35,7 +35,7 @@ PORTALS = {
     "zum.com": "줌",
     "msn.com": "MSN",
 }
-RESOLVE_LIMIT = 60   # 한 번 실행에서 포털 기사 언론사 확인 최대 건수 (나머지는 다음 실행에)
+RESOLVE_LIMIT = 120  # 한 번 실행에서 포털 기사 언론사 확인 최대 건수 (나머지는 다음 실행에)
 RESOLVE_GAP = 3      # 기사 사이 대기(초) — 구글이 GitHub 서버의 몰아치는 요청을 막기 때문에 천천히
 # 뉴스가 아닌 블로그·카페 글 → 수집 대상에서 제외
 NON_NEWS = re.compile(r"(^|\.)(blog|cafe|post)\.|tistory\.com$|brunch\.co\.kr$")
@@ -170,12 +170,34 @@ def clean_press(name):
     return name
 
 
-def press_from_page(url):
+def get_html(url):
     raw = http(url)
     try:
-        html = raw.decode("utf-8")
+        return raw.decode("utf-8")
     except UnicodeDecodeError:
-        html = raw.decode("cp949", "replace")  # 네이트는 EUC-KR
+        return raw.decode("cp949", "replace")  # 네이트는 EUC-KR
+
+
+def press_from_page(url):
+    return press_from_html(get_html(url))
+
+
+def daum_lookup(title):
+    """다음 기사는 구글을 거치지 않고 다음 뉴스 검색으로 원문 페이지를 찾음 → (주소, 언론사) 또는 None"""
+    search = "https://search.daum.net/search?" + urllib.parse.urlencode({"w": "news", "q": title})
+    ids = list(dict.fromkeys(re.findall(r"v\.daum\.net/v/(\w+)", get_html(search))))
+    want = norm(title)[:25]
+    for vid in ids[:3]:
+        url = f"https://v.daum.net/v/{vid}"
+        time.sleep(1)
+        html = get_html(url)
+        og = re.search(r'<meta[^>]+property="og:title"[^>]+content="([^"]+)"', html)
+        if og and want and want in norm(html_lib.unescape(og.group(1))):   # 제목이 같은 기사인지 확인
+            return url, press_from_html(html)
+    return None
+
+
+def press_from_html(html):
     for pat in PRESS_HTML_PATTERNS:
         for m in re.finditer(pat, html):
             name = clean_press(m.group(1))
@@ -191,10 +213,24 @@ def press_from_page(url):
     return ""
 
 
-def resolve_portal(item):
+def resolve_portal(item, google_ok=True):
     """확인 시도 1회. 페이지는 열었는데 언론사를 못 찾으면 시도 횟수를 세고, 3번이면 '언론사 미확인'으로 확정.
     구글이 막은 경우(Throttled)는 횟수에 넣지 않고 그대로 올려보냄 → 다음 실행에서 다시"""
+    # 다음 기사: 먼저 다음 뉴스 검색으로 찾기 (구글 요청 제한과 무관)
+    if item.get("portal") == "다음" and "news.google.com" in item["link"]:
+        try:
+            found = daum_lookup(item["title"])
+        except Exception as e:
+            print(f"  다음 검색 실패 ({item['title'][:20]}…): {e}", file=sys.stderr)
+            found = None
+        if found and found[1]:
+            item["link"], item["source"] = found
+            item["resolved"] = True
+            item.pop("tries", None)
+            return True
     if "news.google.com" in item["link"]:
+        if not google_ok:
+            raise Throttled("이번 실행에서 구글이 이미 막혀 건너뜀")
         item["link"] = decode_google_link(item["link"])   # Throttled 는 위로 전달
         time.sleep(1)
     if item.get("resolved"):          # '언론사 미확인' 재확인은 1번만
@@ -295,23 +331,29 @@ def main():
     pending = [x for x in new_items + list(by_id.values())
                if not x.get("nonNews") and (x.get("portal") or portal_of(x.get("sourceUrl")))
                and (not x.get("resolved") or (x["source"] == "언론사 미확인" and not x.get("recheck")))]
-    tried, resolved, blocked = set(), 0, 0
+    tried, resolved, blocked, google_ok = set(), 0, 0, True
     for x in pending:
         if x["id"] in tried or len(tried) >= RESOLVE_LIMIT:
             continue
-        tried.add(x["id"])
         x["portal"] = x.get("portal") or portal_of(x.get("sourceUrl"))
+        if not google_ok and x["portal"] != "다음":
+            continue   # 구글이 막힌 뒤로는 다음 검색으로 찾을 수 있는 기사만
+        tried.add(x["id"])
         try:
-            if resolve_portal(x):
+            if resolve_portal(x, google_ok):
                 resolved += 1
-            blocked = 0
+            if google_ok:
+                blocked = 0
         except Throttled as e:
+            if not google_ok:
+                continue
             blocked += 1
             print(f"  구글 요청 제한 ({blocked}/3): {e}", file=sys.stderr)
             if blocked >= 3:
-                print("  → 이번 실행은 여기까지. 남은 기사는 다음 실행에서 이어서 확인", file=sys.stderr)
-                break
-            time.sleep(30)   # 잠깐 쉬었다가 다시
+                google_ok = False
+                print("  → 구글 경유 확인은 여기까지. 다음 기사는 다음 검색으로 계속, 나머지는 다음 실행에서", file=sys.stderr)
+            else:
+                time.sleep(30)   # 잠깐 쉬었다가 다시
             continue
         time.sleep(RESOLVE_GAP)
     if pending:
