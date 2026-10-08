@@ -5,6 +5,10 @@ on:
     # 3시간 간격 · 한국시간 00:10, 03:10, 06:10, 09:10, 12:10, 15:10, 18:10, 21:10
     # (UTC 기준 표기. 정각은 GitHub 서버가 붐벼 10분으로 둠)
     - cron: "10 */3 * * *"
+  # config.json(키워드·자동 태그 규칙)을 고치면 바로 한 번 실행해서 기존 기사에도 반영
+  push:
+    branches: [main]
+    paths: ["docs/config.json"]
   workflow_dispatch:
     inputs:
       backfill_days:
@@ -22,9 +26,9 @@ jobs:
   fetch:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v5
 
-      - uses: actions/setup-python@v5
+      - uses: actions/setup-python@v6
         with:
           python-version: "3.12"
 
