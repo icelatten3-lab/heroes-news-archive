@@ -35,7 +35,14 @@ PORTALS = {
     "zum.com": "줌",
     "msn.com": "MSN",
 }
-RESOLVE_LIMIT = 100  # 한 번 실행에서 포털 기사 언론사 확인 최대 건수 (나머지는 다음 실행에)
+RESOLVE_LIMIT = 60   # 한 번 실행에서 포털 기사 언론사 확인 최대 건수 (나머지는 다음 실행에)
+RESOLVE_GAP = 3      # 기사 사이 대기(초) — 구글이 GitHub 서버의 몰아치는 요청을 막기 때문에 천천히
+# 뉴스가 아닌 블로그·카페 글 → 수집 대상에서 제외
+NON_NEWS = re.compile(r"(^|\.)(blog|cafe|post)\.|tistory\.com$|brunch\.co\.kr$")
+
+
+class Throttled(Exception):
+    """구글이 요청을 막음 → 이번 실행은 여기서 멈추고 다음 실행에서 이어서"""
 
 
 def load_json(path, default):
@@ -86,8 +93,14 @@ def host_of(url):
     return re.sub(r"^(www|m|mobile)\.", "", host)
 
 
+def is_non_news(source_url):
+    return bool(NON_NEWS.search((urllib.parse.urlparse(source_url or "").hostname or "").lower()))
+
+
 def portal_of(source_url):
     host = host_of(source_url)
+    if is_non_news(source_url):
+        return ""
     for domain, name in PORTALS.items():
         if host == domain or host.endswith("." + domain):
             return name
@@ -103,11 +116,14 @@ def auto_tags(title, rules):
 def decode_google_link(link):
     """news.google.com/rss/articles/... 링크를 실제 기사 주소로 변환"""
     art_id = link.split("/articles/")[1].split("?")[0]
-    page = http(f"https://news.google.com/articles/{art_id}").decode("utf-8", "replace")
+    try:
+        page = http(f"https://news.google.com/articles/{art_id}").decode("utf-8", "replace")
+    except Exception as e:
+        raise Throttled(f"구글 기사 페이지 실패: {e}")
     sg = re.search(r'data-n-a-sg="([^"]+)"', page)
     ts = re.search(r'data-n-a-ts="([^"]+)"', page)
     if not (sg and ts):
-        return ""
+        raise Throttled("구글 기사 페이지에 변환 정보 없음 (요청 제한 의심)")
     inner = json.dumps(
         ["garturlreq",
          [["X", "X", ["X", "X"], None, None, 1, 1, "US:en", None, 1, None, None, None, None, None, 0, 1],
@@ -116,10 +132,15 @@ def decode_google_link(link):
         separators=(",", ":"), ensure_ascii=False,
     )
     freq = json.dumps([[["Fbv4je", inner, None, "generic"]]], separators=(",", ":"), ensure_ascii=False)
-    res = http("https://news.google.com/_/DotsSplashUi/data/batchexecute",
-               data=urllib.parse.urlencode({"f.req": freq})).decode("utf-8", "replace")
+    try:
+        res = http("https://news.google.com/_/DotsSplashUi/data/batchexecute",
+                   data=urllib.parse.urlencode({"f.req": freq})).decode("utf-8", "replace")
+    except Exception as e:
+        raise Throttled(f"구글 주소 변환 실패: {e}")
     m = re.search(r'https?://[^\\"]+', res)
-    return m.group(0) if m else ""
+    if not m:
+        raise Throttled("구글 주소 변환 결과 없음")
+    return m.group(0)
 
 
 # 1단계: 페이지 구조(HTML)에서 언론사 찾기
@@ -171,21 +192,20 @@ def press_from_page(url):
 
 
 def resolve_portal(item):
-    """확인 시도 1회. 실패하면 다음 실행에서 재시도하고, 3번 실패하면 '언론사 미확인'으로 확정"""
+    """확인 시도 1회. 페이지는 열었는데 언론사를 못 찾으면 시도 횟수를 세고, 3번이면 '언론사 미확인'으로 확정.
+    구글이 막은 경우(Throttled)는 횟수에 넣지 않고 그대로 올려보냄 → 다음 실행에서 다시"""
+    if "news.google.com" in item["link"]:
+        item["link"] = decode_google_link(item["link"])   # Throttled 는 위로 전달
+        time.sleep(1)
     if item.get("resolved"):          # '언론사 미확인' 재확인은 1번만
         item["recheck"] = True
         item["tries"] = 2
     item["tries"] = item.get("tries", 0) + 1
-    real = press = ""
+    press = ""
     try:
-        real = decode_google_link(item["link"]) if "news.google.com" in item["link"] else item["link"]
-        time.sleep(1)
-        press = press_from_page(real) if real else ""
-        time.sleep(1)
+        press = press_from_page(item["link"])
     except Exception as e:
-        print(f"  언론사 확인 실패 ({item['title'][:20]}…): {e}", file=sys.stderr)
-    if real:
-        item["link"] = real
+        print(f"  기사 페이지 열기 실패 ({item['title'][:20]}…): {e}", file=sys.stderr)
     if press:
         item["source"] = press
     elif item["tries"] >= 3:
@@ -252,6 +272,8 @@ def main():
     now = datetime.now(KST).isoformat(timespec="minutes")
     new_items = []
     for it in sorted(found.values(), key=lambda x: x["pub"]):
+        if is_non_news(it["sourceUrl"]):      # 블로그·카페 글은 새로 넣지 않음
+            continue
         old = by_id.get(it["id"])
         if old:
             for kw in it["q"]:
@@ -262,19 +284,36 @@ def main():
         new_items.append(it)
         by_id[it["id"]] = it
 
+    # 예전에 들어온 블로그·카페 글은 지우지 않고 화면에서만 숨김
+    for x in by_id.values():
+        if is_non_news(x.get("sourceUrl")):
+            x.pop("portal", None)
+            x["nonNews"] = True
+
     # 포털 경유 기사 → 실제 언론사 확인 (새 기사 우선, 남는 한도로 예전 기사)
     # (카피라이트 확인 방식 추가 전에 '언론사 미확인'이 된 기사도 한 번 더 확인)
     pending = [x for x in new_items + list(by_id.values())
-               if (x.get("portal") or portal_of(x.get("sourceUrl")))
+               if not x.get("nonNews") and (x.get("portal") or portal_of(x.get("sourceUrl")))
                and (not x.get("resolved") or (x["source"] == "언론사 미확인" and not x.get("recheck")))]
-    tried, resolved = set(), 0
+    tried, resolved, blocked = set(), 0, 0
     for x in pending:
         if x["id"] in tried or len(tried) >= RESOLVE_LIMIT:
             continue
         tried.add(x["id"])
         x["portal"] = x.get("portal") or portal_of(x.get("sourceUrl"))
-        if resolve_portal(x):
-            resolved += 1
+        try:
+            if resolve_portal(x):
+                resolved += 1
+            blocked = 0
+        except Throttled as e:
+            blocked += 1
+            print(f"  구글 요청 제한 ({blocked}/3): {e}", file=sys.stderr)
+            if blocked >= 3:
+                print("  → 이번 실행은 여기까지. 남은 기사는 다음 실행에서 이어서 확인", file=sys.stderr)
+                break
+            time.sleep(30)   # 잠깐 쉬었다가 다시
+            continue
+        time.sleep(RESOLVE_GAP)
     if pending:
         left = len({x["id"] for x in pending}) - resolved
         print(f"포털 경유 기사 언론사 확인 {resolved}건 (남은 {left}건은 다음 실행에서)")
