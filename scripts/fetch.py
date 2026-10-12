@@ -11,6 +11,7 @@ import argparse
 import hashlib
 import html as html_lib
 import json
+import os
 import re
 import sys
 import time
@@ -253,10 +254,24 @@ def resolve_portal(item, google_ok=True):
     return True
 
 
+def current_slot(now):
+    """정기 회차 시각: 한국시간 00:10, 03:10 … 21:10 중 지금이 속한 회차"""
+    t = now - timedelta(minutes=10)
+    return t.replace(hour=t.hour // 3 * 3, minute=10, second=0, microsecond=0)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--backfill-days", type=int, default=0)
     args = ap.parse_args()
+
+    # 정기 실행은 회차마다 4번 시도하므로, 이번 회차를 이미 수집했으면 바로 종료 (아무것도 저장 안 함)
+    scheduled = os.environ.get("EVENT") == "schedule"
+    old_index = load_json(DATA / "index.json", {})
+    slot = current_slot(datetime.now(KST)).isoformat(timespec="minutes")
+    if scheduled and old_index.get("slot") == slot:
+        print(f"정기 회차 {slot[11:16]} 는 이미 수집됨 → 종료")
+        return
 
     cfg = load_json(DOCS / "config.json", {})
     keywords = cfg.get("queries") or []
@@ -410,7 +425,14 @@ def main():
         )
         months.append({"m": month, "n": len(arr)})
     (DATA / "index.json").write_text(
-        json.dumps({"updated": now, "added": added, "months": months}, ensure_ascii=False, indent=1),
+        json.dumps({
+            "updated": now,                 # 실제로 마지막 수집이 끝난 시각
+            "added": added,
+            # 정기 회차 시각 (새 기사가 없어도 회차마다 바뀜) / 지금 수집 시각 — 화면에 따로 표시
+            "slot": slot if scheduled else old_index.get("slot", ""),
+            "manual": now if not scheduled else old_index.get("manual", ""),
+            "months": months,
+        }, ensure_ascii=False, indent=1),
         encoding="utf-8",
     )
     print(f"새 기사 {added}건 추가 (전체 {sum(m['n'] for m in months)}건)")
