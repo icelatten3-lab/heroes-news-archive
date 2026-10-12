@@ -40,6 +40,8 @@ header{padding:28px 0 14px}
 h1{margin:0;font-size:24px;letter-spacing:-.02em}
 .sub{margin-top:4px;color:var(--ink2);font-size:13.5px}
 .sub b{color:var(--new);font-weight:600}
+.sub .sched{display:block;margin-bottom:2px;color:var(--ink)}
+.sub .sched b{color:var(--ink);font-weight:700}
 .head-actions{display:flex;gap:6px;flex-wrap:wrap}
 .btn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13.5px;box-shadow:var(--shadow);white-space:nowrap}
 .btn:hover{border-color:var(--ink3)}
@@ -456,13 +458,33 @@ function render(){
   $('#list').innerHTML = html;
 }
 
+// "10/12 18:10" 형식 (ISO 문자열 → 표시용)
+const fmtTime = iso => iso ? iso.slice(5, 16).replace('-', '/').replace('T', ' ') : '';
+// 정기 회차: 한국시간 00:10부터 3시간 간격
+function nextSlotLabel(slotIso){
+  const t = new Date(Date.parse(slotIso) + 3 * 3600e3 + 9 * 3600e3).toISOString();
+  return t.slice(11, 16);
+}
+function scheduleHTML(){
+  const slot = index.slot, manual = index.manual;
+  let html = '';
+  if (slot) {
+    html += `정기 수집 <b>${esc(fmtTime(slot))}</b> 회차 · 다음 ${nextSlotLabel(slot)}`;
+    // 지금 수집이 마지막 정기 회차보다 나중이면 따로 표시
+    if (manual && manual > slot) html += ` · 지금 수집 ${esc(fmtTime(manual))}`;
+  } else {
+    html += `마지막 수집 ${esc(fmtTime(index.updated) || '-')}`;
+  }
+  return html;
+}
+
 function renderHeader(){
   document.title = cfg.title || '뉴스 아카이브';
   $('#title').textContent = cfg.title || '뉴스 아카이브';
   const total = index.months.reduce((s, m) => s + m.n, 0);
   const newCnt = prevSeen ? items.filter(it => it.got && it.got > prevSeen).length : 0;
-  const up = index.updated ? index.updated.slice(5, 16).replace('-', '/').replace('T', ' ') : '-';
-  $('#sub').innerHTML = `마지막 수집 ${esc(up)} · 전체 ${total.toLocaleString()}건` +
+  $('#sub').innerHTML = `<span class="sched">${scheduleHTML()}</span>` +
+    `전체 ${total.toLocaleString()}건` +
     ((cfg.queries || []).length ? ` · 키워드: ${cfg.queries.map(esc).join(', ')}` : '') +
     (newCnt ? ` · <b>지난 방문 후 새 기사 ${newCnt}건</b>` : '');
   const rb = $('#runBtn');
