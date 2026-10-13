@@ -42,6 +42,8 @@ h1{margin:0;font-size:24px;letter-spacing:-.02em}
 .sub b{color:var(--new);font-weight:600}
 .sub .sched{display:block;margin-bottom:2px;color:var(--ink)}
 .sub .sched b{color:var(--ink);font-weight:700}
+.sub .sched .warn{color:var(--star-ink);font-weight:600}
+.sub .sched .bad{color:var(--danger);font-weight:600}
 .head-actions{display:flex;gap:6px;flex-wrap:wrap}
 .btn{border:1px solid var(--line);background:var(--panel);border-radius:8px;padding:7px 12px;cursor:pointer;font-size:13.5px;box-shadow:var(--shadow);white-space:nowrap}
 .btn:hover{border-color:var(--ink3)}
@@ -460,22 +462,52 @@ function render(){
 
 // "10/12 18:10" 형식 (ISO 문자열 → 표시용)
 const fmtTime = iso => iso ? iso.slice(5, 16).replace('-', '/').replace('T', ' ') : '';
-// 정기 회차: 한국시간 00:10부터 3시간 간격
-function nextSlotLabel(slotIso){
-  const t = new Date(Date.parse(slotIso) + 3 * 3600e3 + 9 * 3600e3).toISOString();
-  return t.slice(11, 16);
+/* ---------- 정기 회차 상태 ----------
+   회차: 한국시간 00:10부터 3시간 간격. GitHub이 늦거나 건너뛸 수 있어 회차마다 +0/+30/+75/+105분에 재시도
+   (fetch.yml 의 cron 과 맞춰야 함) */
+const H = 3600e3, RETRY_MIN = [0, 30, 75, 105];
+const slotIso = ms => new Date(ms + 9 * H).toISOString().slice(0, 16) + '+09:00';
+const hm = ms => new Date(ms + 9 * H).toISOString().slice(11, 16);
+// 지금 시각이 속한 회차의 시작 시각(ms)
+function currentSlotMs(now = Date.now()){
+  const k = new Date(now + 9 * H - 10 * 60e3);           // 한국시간 기준, 10분 빼고
+  k.setUTCHours(Math.floor(k.getUTCHours() / 3) * 3, 10, 0, 0);
+  return k.getTime() - 9 * H;
 }
 function scheduleHTML(){
   const slot = index.slot, manual = index.manual;
-  let html = '';
-  if (slot) {
-    html += `정기 수집 <b>${esc(fmtTime(slot))}</b> 회차 · 다음 ${nextSlotLabel(slot)}`;
-    // 지금 수집이 마지막 정기 회차보다 나중이면 따로 표시
-    if (manual && manual > slot) html += ` · 지금 수집 ${esc(fmtTime(manual))}`;
+  if (!slot) return `마지막 수집 ${esc(fmtTime(index.updated) || '-')}`;
+  const now = Date.now(), cur = currentSlotMs(now);
+  const done = new Set(index.slots || [slot]);
+  const parts = [];
+
+  if (slot >= slotIso(cur)) {
+    // 이번 회차까지 정상
+    parts.push(`정기 수집 <b>${esc(fmtTime(slot))}</b> 회차 완료 · 다음 ${hm(cur + 3 * H)}`);
   } else {
-    html += `마지막 수집 ${esc(fmtTime(index.updated) || '-')}`;
+    // 이번 회차가 아직 안 돌았음 → 재시도가 남았으면 '대기', 다 지났으면 '누락'
+    // (GitHub 재시도 자체도 늦게 도는 일이 많아 다음 회차 30분 전까지는 '지연'으로 봄)
+    const nextTry = RETRY_MIN.map(m => cur + m * 60e3).find(t => t > now);
+    if (now < cur + 20 * 60e3) {
+      parts.push(`${hm(cur)} 회차 수집 진행 중`);
+    } else if (now < cur + 2.5 * H) {
+      parts.push(`<span class="warn">⏳ ${hm(cur)} 회차 수집 지연 중</span> (GitHub 대기` +
+        (nextTry ? `, ${hm(nextTry)}경 재시도)` : ', 재시도 결과 기다리는 중)'));
+    } else {
+      parts.push(`<span class="bad">⚠ ${hm(cur)} 회차 수집 누락</span> · 다음 ${hm(cur + 3 * H)}`);
+    }
+    parts.push(`마지막 정기 수집 ${esc(fmtTime(slot))} 회차`);
   }
-  return html;
+  // 최근 24시간 중 놓친 회차 (지금 회차 제외)
+  if (index.slots && index.slots.length) {
+    const since = Date.parse(index.slots[0]);   // 기록을 시작한 회차 이전은 판단하지 않음
+    const missed = [];
+    for (let t = cur - 3 * H; t > now - 24 * H && t > since; t -= 3 * H) if (!done.has(slotIso(t))) missed.unshift(hm(t));
+    if (missed.length) parts.push(`<span class="bad">최근 24시간 누락 ${missed.join(', ')}</span>`);
+  }
+  // 지금 수집이 마지막 정기 회차보다 나중이면 따로 표시
+  if (manual && manual > slot) parts.push(`지금 수집 ${esc(fmtTime(manual))}`);
+  return parts.join(' · ');
 }
 
 function renderHeader(){
