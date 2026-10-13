@@ -431,6 +431,9 @@ def main():
             # 정기 회차 시각 (새 기사가 없어도 회차마다 바뀜) / 지금 수집 시각 — 화면에 따로 표시
             "slot": slot if scheduled else old_index.get("slot", ""),
             "manual": now if not scheduled else old_index.get("manual", ""),
+            # 최근 정기 회차 완료 기록 (화면에서 놓친 회차 표시용, 최근 24회 = 3일)
+            "slots": (([s for s in old_index.get("slots", []) if s != slot] + [slot]) if scheduled
+                      else old_index.get("slots", []))[-24:],
             "months": months,
         }, ensure_ascii=False, indent=1),
         encoding="utf-8",
