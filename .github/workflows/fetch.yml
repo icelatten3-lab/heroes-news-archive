@@ -1,10 +1,11 @@
 name: 뉴스 수집
 
 on:
+  # 정기 회차: 3시간 간격 · 한국시간 00:10, 03:10, 06:10, 09:10, 12:10, 15:10, 18:10, 21:10
+  # 주 실행: 외부 예약 서비스(cron-job.org)가 회차 시각에 workflow_dispatch(trigger=schedule)로 실행
+  # 보조 실행: 아래 GitHub 예약 실행 (늦거나 건너뛰는 일이 잦아 보조용, 회차마다 4번 시도)
+  # → 먼저 돈 1번만 실제 수집, 나머지는 "이번 회차 완료"를 확인하고 바로 종료 (scripts/fetch.py)
   schedule:
-    # 정기 회차: 3시간 간격 · 한국시간 00:10, 03:10, 06:10, 09:10, 12:10, 15:10, 18:10, 21:10
-    # GitHub 예약 실행은 늦거나 건너뛰는 일이 잦아서 회차마다 4번 시도
-    # → 먼저 돈 1번만 실제 수집, 나머지는 "이번 회차 완료"를 확인하고 바로 종료 (scripts/fetch.py)
     # (UTC 기준 표기. 한국시간 = UTC + 9시간)
     - cron: "10 */3 * * *"      # 회차 시각       예) 18:10
     - cron: "40 */3 * * *"      # +30분 재시도    예) 18:40
@@ -19,6 +20,9 @@ on:
       backfill_days:
         description: "과거 며칠치를 소급 수집할지 (평소엔 0)"
         default: "0"
+      trigger:
+        description: "schedule = 정기 회차(외부 예약 서비스용) / manual = 지금 수집"
+        default: "manual"
 
 permissions:
   contents: write
@@ -30,6 +34,9 @@ concurrency:
 jobs:
   fetch:
     runs-on: ubuntu-latest
+    env:
+      # schedule = 정기 회차(GitHub 예약 또는 외부 예약 서비스) / 그 외 = 지금 수집·config.json 수정
+      EVENT: ${{ (github.event_name == 'schedule' || inputs.trigger == 'schedule') && 'schedule' || github.event_name }}
     steps:
       - uses: actions/checkout@v5
 
@@ -40,8 +47,6 @@ jobs:
       - name: 수집
         env:
           BACKFILL: ${{ inputs.backfill_days || '0' }}
-          # schedule = 정기 회차 / workflow_dispatch = 지금 수집 / push = config.json 수정
-          EVENT: ${{ github.event_name }}
         run: python scripts/fetch.py --backfill-days "$BACKFILL"
 
       - name: 저장(커밋)
@@ -50,7 +55,7 @@ jobs:
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add docs/data
           if git diff --cached --quiet; then echo "변경 없음"; exit 0; fi
-          if [ "${{ github.event_name }}" = "schedule" ]; then KIND="정기"; else KIND="지금 수집"; fi
+          if [ "$EVENT" = "schedule" ]; then KIND="정기"; else KIND="지금 수집"; fi
           git commit -m "뉴스 수집($KIND) $(TZ=Asia/Seoul date '+%Y-%m-%d %H:%M')"
           # 그 사이 편집 모드에서 메모가 저장됐을 수 있으므로 rebase 후 push
           for i in 1 2 3; do
