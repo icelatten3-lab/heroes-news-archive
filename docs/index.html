@@ -494,7 +494,7 @@ function scheduleHTML(){
       parts.push(`<span class="warn">⏳ ${hm(cur)} 회차 수집 지연 중</span> (GitHub 대기` +
         (nextTry ? `, ${hm(nextTry)}경 재시도)` : ', 재시도 결과 기다리는 중)'));
     } else {
-      parts.push(`<span class="bad">⚠ ${hm(cur)} 회차 수집 누락</span> · 다음 ${hm(cur + 3 * H)}`);
+      parts.push(`<span class="bad">⚠ ${hm(cur)} 회차 건너뜀</span> · 다음 ${hm(cur + 3 * H)} 회차에서 함께 수집`);
     }
     parts.push(`마지막 정기 수집 ${esc(fmtTime(slot))} 회차`);
   }
@@ -503,7 +503,8 @@ function scheduleHTML(){
     const since = Date.parse(index.slots[0]);   // 기록을 시작한 회차 이전은 판단하지 않음
     const missed = [];
     for (let t = cur - 3 * H; t > now - 24 * H && t > since; t -= 3 * H) if (!done.has(slotIso(t))) missed.unshift(hm(t));
-    if (missed.length) parts.push(`<span class="bad">최근 24시간 누락 ${missed.join(', ')}</span>`);
+    // 회차마다 최근 6시간치를 조회하므로 한 회차를 건너뛰어도 다음 회차가 기사를 메움
+    if (missed.length) parts.push(`<span class="bad">건너뛴 회차 ${missed.join(', ')}</span> (기사는 다음 회차에서 보충)`);
   }
   // 지금 수집이 마지막 정기 회차보다 나중이면 따로 표시
   if (manual && manual > slot) parts.push(`지금 수집 ${esc(fmtTime(manual))}`);
